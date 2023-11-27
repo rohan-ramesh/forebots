@@ -1,0 +1,183 @@
+@import 'normalize.css';
+@import '@blueprintjs/core/lib/css/blueprint.css';
+@import '@blueprintjs/icons/lib/css/blueprint-icons.css';
+
+@import '@blueprintjs/core/lib/scss/variables.scss';
+
+:root {
+	color-scheme: light dark;
+}
+
+body {
+	background: $dark-gray2;
+	overflow: hidden;
+}
+
+.canvas,
+.overlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+}
+
+$unit: 32px;
+
+.overlay {
+	--timeline-height: #{$unit};
+	--hierarchy-width: #{$unit};
+	--inspector-width: #{$unit};
+
+	display: grid;
+	grid-template:
+		'toolbar toolbar toolbar' 48px
+		'hierarchy . inspector' 1fr
+		'timeline timeline inspector' var(--timeline-height)
+		/ var(--hierarchy-width) 1fr var(--inspector-width);
+
+	& > * {
+		overflow: hidden;
+	}
+
+	&.inspector-shown {
+		--inspector-width: 300px;
+	}
+
+	&.hierarchy-shown {
+		--hierarchy-width: 200px;
+	}
+
+	&.timeline-shown {
+		--timeline-height: 200px;
+	}
+
+	&.ui-hidden {
+		display: none;
+	}
+}
+
+.toolbar,
+.hierarchy,
+.inspector,
+.timeline {
+	background: #00000080;
+}
+
+.toolbar {
+	grid-area: toolbar;
+	border-bottom: 1px solid #80808080;
+	display: flex;
+	gap: 8px;
+	padding: 8px;
+}
+
+.hierarchy {
+	grid-area: hierarchy;
+	border-right: 1px solid #80808080;
+	display: grid;
+}
+
+.inspector {
+	grid-area: inspector;
+	border-left: 1px solid #80808080;
+	display: grid;
+}
+
+.timeline {
+	grid-area: timeline;
+	border-top: 1px solid #80808080;
+	display: grid;
+}
+
+.timeline {
+	grid-template:
+		'title toggle' 1fr
+		/ 1fr #{$unit};
+}
+
+.inspector,
+.hierarchy {
+	grid-template:
+		'toggle' #{$unit}
+		'title' 1fr
+		/ 1fr;
+}
+
+.inspector-shown .inspector,
+.timeline-shown .timeline {
+	grid-template:
+		'title toggle' #{$unit}
+		'body body' 1fr
+		/ 1fr #{$unit};
+}
+
+.hierarchy-shown .hierarchy {
+	grid-template:
+		'toggle title' #{$unit}
+		'body body' 1fr
+		/ #{$unit} 1fr;
+}
+
+.inspector,
+.hierarchy,
+.timeline {
+	.title {
+		position: relative;
+		grid-area: title;
+		font-weight: 600;
+		line-height: $unit;
+	}
+
+	.toggle {
+		grid-area: toggle;
+	}
+
+	.body {
+		grid-area: body;
+	}
+
+	.title span {
+		position: absolute;
+		display: inline-block;
+		left: 0;
+		top: 50%;
+		transform: translateY(-50%);
+		padding: 0 8px;
+	}
+}
+
+.inspector-hidden .inspector .title span,
+.hierarchy-hidden .hierarchy .title span {
+	transform: translate(-50%, -50%) rotate(90deg) translate(50%, -50%);
+	left: 0;
+	top: 0;
+}
+
+.show-ui:not(:nth-child(-1)):not(:nth-child(-1)) {
+	position: absolute;
+	left: 10px;
+	top: 10px;
+	background: #00000040;
+	
+	.bp5-button-text {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+
+		kbd {
+			display: inline-block;
+			font-family: 'Roboto Mono', monospace;
+			font-size: 10px;
+			text-transform: uppercase;
+			font-weight: 800;
+			padding: 4px 6px;
+			border-radius: 4px;
+			background: $dark-gray2;
+		}
+
+		span {
+			font-size: 12px;
+		}
+	}
+}
