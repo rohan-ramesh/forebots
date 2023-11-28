@@ -16,6 +16,8 @@
     "@blueprintjs/core": "^5.7.1",
     "@electron-toolkit/preload": "^2.0.0",
     "@electron-toolkit/utils": "^2.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "three": "^0.158.0"
   },
   "devDependencies": {
@@ -30,8 +32,6 @@
     "electron": "^25.6.0",
     "electron-builder": "^24.6.3",
     "electron-vite": "^1.0.27",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
     "sass": "^1.69.5",
     "typescript": "^5.1.6",
     "vite": "^4.4.9"

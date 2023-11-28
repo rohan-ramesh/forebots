@@ -32,7 +32,7 @@ $unit: 32px;
 	display: grid;
 	grid-template:
 		'toolbar toolbar toolbar' 48px
-		'hierarchy . inspector' 1fr
+		'hierarchy clickthrough inspector' 1fr
 		'timeline timeline inspector' var(--timeline-height)
 		/ var(--hierarchy-width) 1fr var(--inspector-width);
 
@@ -70,6 +70,11 @@ $unit: 32px;
 	display: flex;
 	gap: 8px;
 	padding: 8px;
+}
+
+.fill {
+	width: 100%;
+	flex-shrink: 1;
 }
 
 .hierarchy {
@@ -147,6 +152,10 @@ $unit: 32px;
 	}
 }
 
+.clickthrough {
+	grid-area: clickthrough;
+}
+
 .inspector-hidden .inspector .title span,
 .hierarchy-hidden .hierarchy .title span {
 	transform: translate(-50%, -50%) rotate(90deg) translate(50%, -50%);
@@ -180,4 +189,8 @@ $unit: 32px;
 			font-size: 12px;
 		}
 	}
+}
+
+.bad {
+	color: $red5;
 }
