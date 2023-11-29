@@ -23,8 +23,8 @@
 		"jsx": "react-jsx",
 		"baseUrl": ".",
 		"paths": {
-			"@renderer/*": ["src/renderer/src/*"]
+			"@renderer/*": ["src/renderer/js/*"]
 		}
 	},
-	"include": ["src"]
+	"include": ["src", "test/cavegen.test.ts"]
 }

@@ -194,3 +194,14 @@ $unit: 32px;
 .bad {
 	color: $red5;
 }
+
+.settings-popover {
+	max-width: 300px;
+}
+
+.small {
+	font-size: 12px;
+	line-height: 1.5;
+	color: $gray5;
+	margin: 4px 0;
+}

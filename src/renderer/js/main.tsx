@@ -7,6 +7,7 @@ import * as Three from 'three'
 
 import { assert, clamp, unwrap } from './util'
 import { PhysicsScene } from './physics'
+import { Cave } from './cavegen'
 
 // TODO
 class Hierarchy extends React.Component {
@@ -35,6 +36,10 @@ type MainViewState = {
 
 	fpsAvg: number
 	fpsLow: number
+
+	settings: {
+		useArtificialKeyups: boolean
+	}
 }
 
 class MainView extends React.Component<{}, MainViewState> {
@@ -50,15 +55,20 @@ class MainView extends React.Component<{}, MainViewState> {
 
 	light: Three.PointLight | null = null
 
+	cave: Cave | null = null
+
 	keydownEvent: ((e: KeyboardEvent) => void) | null = null
 	keyupEvent: ((e: KeyboardEvent) => void) | null = null
 	mouseDownEvent: ((e: MouseEvent) => void) | null = null
 	mouseUpEvent: ((e: MouseEvent) => void) | null = null
 	mouseMoveEvent: ((e: MouseEvent) => void) | null = null
+	focusEvent: ((e: FocusEvent) => void) | null = null
+	blurEvent: ((e: FocusEvent) => void) | null = null
 	scrollEvent: ((e: WheelEvent) => void) | null = null
 	windowResizeEvent: (() => void) | null = null
 
 	keysPressed: Set<string> = new Set()
+	artificialKeyups: { [key: string]: ReturnType<typeof setTimeout> } = {}
 
 	physicsScene: PhysicsScene | null = null
 	prevTime: number = 0
@@ -79,6 +89,10 @@ class MainView extends React.Component<{}, MainViewState> {
 
 			fpsAvg: 0,
 			fpsLow: 0,
+
+			settings: {
+				useArtificialKeyups: false,
+			},
 		}
 
 		this.canvasRef = React.createRef()
@@ -119,6 +133,47 @@ class MainView extends React.Component<{}, MainViewState> {
 							<B.Button icon="fast-backward" />
 						</B.ButtonGroup>
 						<div className="fill" />
+						<B.ButtonGroup>
+							<B.Popover
+								interactionKind="click"
+								position="bottom-right"
+								content={
+									<B.Menu className="settings-popover">
+										<B.MenuItem
+											text={
+												<>
+													<B.Text>Use artificial keyups</B.Text>
+													<B.Text className="small">
+														Artificial keyups are used to prevent keys from
+														getting stuck when the window loses focus, or for
+														keyboards that do not support NKRO.
+													</B.Text>
+												</>
+											}
+											multiline={true}
+											icon={
+												this.state.settings.useArtificialKeyups
+													? 'tick'
+													: 'blank'
+											}
+											onClick={() =>
+												this.setState({
+													settings: {
+														...this.state.settings,
+														useArtificialKeyups:
+															!this.state.settings.useArtificialKeyups,
+													},
+												})
+											}
+											shouldDismissPopover={false}
+										/>
+									</B.Menu>
+								}
+								renderTarget={({ isOpen, ...targetProps }) => (
+									<B.Button {...targetProps} icon="cog" active={isOpen} />
+								)}
+							/>
+						</B.ButtonGroup>
 						<B.Text>
 							FPS: 1s avg{' '}
 							<span className={this.state.fpsAvg < 20 ? 'bad' : ''}>
@@ -222,23 +277,51 @@ class MainView extends React.Component<{}, MainViewState> {
 		renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight)
 		this.three = { scene, camera, renderer }
 
-		this.light = new Three.PointLight(0xffffff, 100)
+		// Cyan background
+		scene.background = new Three.Color(0x00ffff)
+		scene.add(new Three.AmbientLight(0x404040))
+
+		this.light = new Three.PointLight(0xffffff, 300)
 		this.light.position.set(0, 1, 0)
 		scene.add(this.light)
 
 		this.physicsScene = new PhysicsScene(this.three)
 		await this.physicsScene.init()
 
+		this.cave = new Cave()
+		let chunk = this.cave.getChunk(0, 0, 0)
+		let material = new Three.MeshPhongMaterial({ color: 0x00ff00 })
+		let mesh = new Three.Mesh(chunk.geom, material)
+
+		scene.add(mesh)
+
 		this.keydownEvent = (e) => {
-			if (e.key === 'Tab') {
+			if (e.code === 'Tab') {
 				this.setState({ uiShown: !this.state.uiShown })
 			}
-			this.keysPressed.add(e.key)
+			let now = performance.now()
+
+			this.keysPressed.add(e.code)
+			if (this.artificialKeyups[e.code]) {
+				clearTimeout(this.artificialKeyups[e.code])
+				delete this.artificialKeyups[e.code]
+			}
+			this.artificialKeyups[e.code] = setTimeout(() => {
+				if (!this.state.settings.useArtificialKeyups) {
+					return
+				}
+				this.keysPressed.delete(e.code)
+				delete this.artificialKeyups[e.code]
+			}, 1000)
 		}
 		document.addEventListener('keydown', this.keydownEvent)
 
 		this.keyupEvent = (e) => {
-			this.keysPressed.delete(e.key)
+			if (this.artificialKeyups[e.code]) {
+				clearTimeout(this.artificialKeyups[e.code])
+				delete this.artificialKeyups[e.code]
+			}
+			this.keysPressed.delete(e.code)
 		}
 		document.addEventListener('keyup', this.keyupEvent)
 
@@ -261,7 +344,6 @@ class MainView extends React.Component<{}, MainViewState> {
 		document.addEventListener('mouseup', this.mouseUpEvent)
 
 		this.mouseMoveEvent = (e) => {
-			console.log(this.cameraRotStart)
 			if (this.cameraRotStart) {
 				let { x, y } = this.cameraRotStart
 				let dx = e.clientX - x
@@ -271,12 +353,22 @@ class MainView extends React.Component<{}, MainViewState> {
 					rot.order = 'YXZ'
 					rot.y -= dx * 0.002
 					rot.x = clamp(rot.x - dy * 0.002, -Math.PI / 2, Math.PI / 2)
-					console.log('rot', rot)
 				}
 				this.cameraRotStart = { x: e.clientX, y: e.clientY }
 			}
 		}
 		document.addEventListener('mousemove', this.mouseMoveEvent)
+
+		this.focusEvent = (e) => {
+			// pass
+		}
+		window.addEventListener('focus', this.focusEvent)
+
+		this.blurEvent = (e) => {
+			this.keysPressed.clear()
+			this.cameraRotStart = null
+		}
+		window.addEventListener('blur', this.blurEvent)
 
 		this.scrollEvent = (e) => {
 			if (this.three) {
@@ -304,12 +396,32 @@ class MainView extends React.Component<{}, MainViewState> {
 		if (this.keyupEvent) {
 			document.removeEventListener('keyup', this.keyupEvent)
 		}
+		if (this.mouseDownEvent) {
+			document.removeEventListener('mousedown', this.mouseDownEvent)
+		}
+		if (this.mouseUpEvent) {
+			document.removeEventListener('mouseup', this.mouseUpEvent)
+		}
+		if (this.mouseMoveEvent) {
+			document.removeEventListener('mousemove', this.mouseMoveEvent)
+		}
+		if (this.focusEvent) {
+			window.removeEventListener('focus', this.focusEvent)
+		}
+		if (this.blurEvent) {
+			window.removeEventListener('blur', this.blurEvent)
+		}
+		if (this.scrollEvent) {
+			document.removeEventListener('wheel', this.scrollEvent)
+		}
 		if (this.windowResizeEvent) {
 			window.removeEventListener('resize', this.windowResizeEvent)
 		}
 	}
 
 	renderFrame() {
+		//console.log(this.keysPressed)
+
 		let now = performance.now()
 		let deltaMs = now - this.prevTime
 		this.prevTime = now
@@ -319,7 +431,6 @@ class MainView extends React.Component<{}, MainViewState> {
 		while (this.fpsMeasureTime > 1000 && this.fpsMeasures.length > 1) {
 			this.fpsMeasureTime -= 1000 / unwrap(this.fpsMeasures.shift())
 		}
-		console.log(this.fpsMeasures)
 		this.setState({
 			fpsAvg:
 				this.fpsMeasures.reduce((a, b) => a + b, 0) / this.fpsMeasures.length,
@@ -333,28 +444,41 @@ class MainView extends React.Component<{}, MainViewState> {
 		this.physicsScene.update()
 
 		let dist = 0.01 * deltaMs
-		if (['w', 'a', 's', 'd'].some((k) => this.keysPressed.has(k))) {
+		if (['KeyW', 'KeyA', 'KeyS', 'KeyD'].some((k) => this.keysPressed.has(k))) {
 			let facing = this.three.camera.getWorldDirection(new Three.Vector3())
 			facing.y = 0
 			facing.normalize()
 			let right = new Three.Vector3()
 			right.crossVectors(facing, new Three.Vector3(0, 1, 0))
-			if (this.keysPressed.has('w')) {
-				this.three.camera.position.addScaledVector(facing, dist)
-			} else if (this.keysPressed.has('s')) {
-				this.three.camera.position.addScaledVector(facing, -dist)
-			}
-			if (this.keysPressed.has('a')) {
-				this.three.camera.position.addScaledVector(right, -dist)
-			} else if (this.keysPressed.has('d')) {
-				this.three.camera.position.addScaledVector(right, dist)
-			}
+			let dir = new Three.Vector3(
+				Number(this.keysPressed.has('KeyD')) -
+					Number(this.keysPressed.has('KeyA')),
+				0,
+				Number(this.keysPressed.has('KeyS')) -
+					Number(this.keysPressed.has('KeyW')),
+			)
+			dir.normalize()
+			dir.applyAxisAngle(
+				new Three.Vector3(0, 1, 0),
+				this.three.camera.rotation.y,
+			)
+			dir.multiplyScalar(dist)
+			this.three.camera.position.add(dir)
 		}
-		if (this.keysPressed.has('Shift')) {
+		/* if (
+			this.keysPressed.has('ShiftLeft') ||
+			this.keysPressed.has('ShiftRight')
+		) {
 			this.three.camera.position.y -= dist
-		} else if (this.keysPressed.has(' ')) {
+		} else if (this.keysPressed.has('Space')) {
 			this.three.camera.position.y += dist
-		}
+		} */
+		let dy =
+			Number(this.keysPressed.has('Space')) -
+			Number(
+				this.keysPressed.has('ShiftLeft') || this.keysPressed.has('ShiftRight'),
+			)
+		this.three.camera.position.y += dy * dist
 
 		let cameraPos = this.three.camera.position.clone()
 		let cameraUp = this.three.camera.up.clone()
