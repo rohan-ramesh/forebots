@@ -7,6 +7,8 @@ import { unwrap } from './util'
 // @ts-ignore
 import { marchingCubes } from 'isosurface'
 
+import '../../preload/types.d.ts'
+
 export class Cache<T> {
 	private map: Map<number, Map<number, Map<number, T>>>
 	private keySet: Set<[number, number, number]>
@@ -91,47 +93,75 @@ export class Cave {
 	private rand: ReturnType<typeof alea>
 	private simplex: simplex.NoiseFunction3D
 
-	private baseChunkCache: Cache<ChunkWeights> = new Cache(BASE_CHUNK_CACHE_SIZE)
-	private chunkCache: Cache<Chunk> = new Cache(CHUNK_CACHE_SIZE)
+	private constructor() {
+		this.seed = undefined as any
+		this.rand = undefined as any
+		this.simplex = undefined as any
+	}
 
-	constructor(seed: number = getSeed()) {
-		this.seed = seed
-		this.rand = alea(seed)
+	static async init() {
+		let cave = new Cave()
+		await cave.init_()
+		return cave
+	}
+
+	private async init_() {
+		let seed = await window.electronAPI.getMetadata('seed')
+		if (seed) {
+			this.seed = parseInt(seed)
+		} else {
+			this.seed = getSeed()
+			await window.electronAPI.setMetadata('seed', this.seed.toString())
+		}
+		this.rand = alea(this.seed)
 		this.simplex = simplex.createNoise3D(this.rand)
 	}
 
-	getChunk(x: number, y: number, z: number): Chunk {
-		let cacheEntry = this.chunkCache.get(x, y, z)
-		if (cacheEntry) {
-			return cacheEntry
+	async getChunk(x: number, y: number, z: number): Promise<Chunk> {
+		//let cacheEntry = this.chunkCache.get(x, y, z)
+
+		let cachedFaces = await window.electronAPI.getChunkFaces(x, y, z)
+		let cachedVertices = await window.electronAPI.getChunkVertices(x, y, z)
+		if (cachedFaces && cachedVertices) {
+			let geom = new Three.BufferGeometry()
+			geom.setAttribute(
+				'position',
+				new Three.BufferAttribute(cachedVertices, 3),
+			)
+			geom.setIndex(new Three.BufferAttribute(cachedFaces, 1))
+			return new Chunk(geom)
 		}
 
-		let baseChunk = this.getBaseChunk(x, y, z)
+		let baseChunk = await this.getBaseChunk(x, y, z)
 
-		let geom = new Three.BufferGeometry()
 		console.time('marching cubes')
 		let surface = marchingCubes(
 			[CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE],
 			(x: number, y: number, z: number) => {
 				return baseChunk[x * CHUNK_SIZE ** 2 + y * CHUNK_SIZE + z]
 			},
-		)
+		) as {
+			positions: [number, number, number][]
+			cells: [number, number, number][]
+		}
 		console.timeEnd('marching cubes')
 		let vertices = new Float32Array(surface.positions.flat())
 		let faces = surface.cells.flat()
 
+		await window.electronAPI.setChunkVertices(x, y, z, vertices)
+		await window.electronAPI.setChunkFaces(x, y, z, new Uint16Array(faces))
+
+		let geom = new Three.BufferGeometry()
 		geom.setAttribute('position', new Three.BufferAttribute(vertices, 3))
 		geom.setIndex(faces)
-
 		let chunk = new Chunk(geom)
-		this.chunkCache.set(x, y, z, chunk)
 		return chunk
 	}
 
-	getBaseChunk(x: number, y: number, z: number): ChunkWeights {
-		let cacheEntry = this.baseChunkCache.get(x, y, z)
-		if (cacheEntry) {
-			return cacheEntry
+	async getBaseChunk(x: number, y: number, z: number): Promise<ChunkWeights> {
+		let cachedWeights = await window.electronAPI.getChunkWeights(x, y, z)
+		if (cachedWeights) {
+			return cachedWeights
 		}
 
 		let chunk: ChunkWeights = new Float32Array(CHUNK_SIZE ** 3)
@@ -148,7 +178,7 @@ export class Cave {
 			}
 		}
 
-		this.baseChunkCache.set(x, y, z, chunk)
+		window.electronAPI.setChunkWeights(x, y, z, chunk)
 		return chunk
 	}
 }

@@ -5,9 +5,11 @@ import ReactDOM from 'react-dom/client'
 import * as B from '@blueprintjs/core'
 import * as Three from 'three'
 
-import { assert, clamp, unwrap } from './util'
+import { assert, basename, clamp, sizeToString, unwrap } from './util'
 import { PhysicsScene } from './physics'
 import { Cave } from './cavegen'
+
+import '../../preload/types.d.ts'
 
 // TODO
 class Hierarchy extends React.Component {
@@ -40,6 +42,9 @@ type MainViewState = {
 	settings: {
 		useArtificialKeyups: boolean
 	}
+
+	currentDatabase: 'unknown' | { path: string } | null
+	databaseSize: number
 }
 
 class MainView extends React.Component<{}, MainViewState> {
@@ -79,6 +84,11 @@ class MainView extends React.Component<{}, MainViewState> {
 	fpsMeasures: number[] = []
 	fpsMeasureTime: number = 0
 
+	updateDatabaseSizeInterval: ReturnType<typeof setInterval> | null = null
+
+	isLoading: boolean = false
+	caveObjects: Three.Object3D[] = []
+
 	constructor(props: {}) {
 		super(props)
 		this.state = {
@@ -93,6 +103,9 @@ class MainView extends React.Component<{}, MainViewState> {
 			settings: {
 				useArtificialKeyups: false,
 			},
+
+			currentDatabase: 'unknown',
+			databaseSize: 0,
 		}
 
 		this.canvasRef = React.createRef()
@@ -100,9 +113,101 @@ class MainView extends React.Component<{}, MainViewState> {
 	}
 
 	render() {
+		let saveAs =
+			!this.state.currentDatabase ||
+			this.keysPressed.has('ControlLeft') ||
+			this.keysPressed.has('ControlRight')
+
+		// prettier-ignore
+		let databasePathStylized =
+			this.state.currentDatabase === 'unknown' ? <i>Loading...</i> :
+			this.state.currentDatabase === null ? <i>In-memory database</i> :
+			basename(this.state.currentDatabase.path)
+
+		let fileOperations = (
+			<B.ButtonGroup>
+				<B.Button
+					icon="folder-open"
+					title="Open"
+					onClick={async () => {
+						this.isLoading = true
+						let confirmation = confirm(
+							'Are you sure you want to close the current database? All ' +
+								'unsaved changes will be lost.',
+						)
+						if (!confirmation) {
+							return
+						}
+
+						let file = await window.electronAPI.openFile()
+						if (!file) {
+							return
+						}
+						await window.electronAPI.openDatabase(file)
+						this.setState({
+							currentDatabase: { path: file },
+						})
+						this.loadCave()
+						this.isLoading = false
+					}}
+				/>
+				<B.Button
+					icon="cross"
+					title={this.state.currentDatabase ? 'Close' : ''}
+					onClick={async () => {
+						this.isLoading = true
+						if (!this.state.currentDatabase) {
+							return
+						}
+						let confirmation = confirm(
+							'Are you sure you want to close the current database? All ' +
+								'unsaved changes will be lost.',
+						)
+						if (!confirmation) {
+							return
+						}
+
+						await window.electronAPI.closeDatabase()
+						assert((await window.electronAPI.currentDatabase()) === undefined)
+						this.setState({
+							currentDatabase: null,
+						})
+						this.loadCave()
+						this.isLoading = false
+					}}
+					disabled={this.state.currentDatabase === null}
+				>
+					<div className="multiline">
+						<p>{databasePathStylized}</p>
+						<p className="small-inline">
+							{sizeToString(this.state.databaseSize)}
+						</p>
+					</div>
+				</B.Button>
+				<B.Button
+					icon={saveAs ? 'download' : 'floppy-disk'}
+					title={saveAs ? 'Save As' : 'Save'}
+					onClick={async () => {
+						this.isLoading = true
+						if (saveAs) {
+							let result = await window.electronAPI.saveDatabaseAs()
+							if (!result.canceled) {
+								this.setState({
+									currentDatabase: { path: unwrap(result.path) },
+								})
+							}
+						} else {
+							await window.electronAPI.saveDatabase()
+						}
+						this.isLoading = false
+					}}
+				/>
+			</B.ButtonGroup>
+		)
+
 		return (
 			<>
-				<canvas className="canvas" ref={this.canvasRef} />
+				<canvas tabIndex={0} className="canvas" ref={this.canvasRef} />
 				{!this.state.uiShown && (
 					<B.Button
 						className="show-ui"
@@ -123,14 +228,12 @@ class MainView extends React.Component<{}, MainViewState> {
 					`}
 				>
 					<div className="toolbar">
+						{fileOperations}
 						<B.ButtonGroup>
+							<B.Button icon="step-backward" />
 							<B.Button icon="play" />
 							<B.Button icon="pause" />
-							<B.Button icon="stop" />
 							<B.Button icon="step-forward" />
-							<B.Button icon="step-backward" />
-							<B.Button icon="fast-forward" />
-							<B.Button icon="fast-backward" />
 						</B.ButtonGroup>
 						<div className="fill" />
 						<B.ButtonGroup>
@@ -174,7 +277,7 @@ class MainView extends React.Component<{}, MainViewState> {
 								)}
 							/>
 						</B.ButtonGroup>
-						<B.Text>
+						<B.Text className="fps-counter">
 							FPS: 1s avg{' '}
 							<span className={this.state.fpsAvg < 20 ? 'bad' : ''}>
 								{this.state.fpsAvg.toFixed(1)}
@@ -210,7 +313,11 @@ class MainView extends React.Component<{}, MainViewState> {
 							</div>
 						)}
 					</div>
-					<div className="clickthrough" ref={this.clickthroughRef}></div>
+					<div
+						tabIndex={0}
+						className="clickthrough"
+						ref={this.clickthroughRef}
+					></div>
 					<div className="inspector">
 						<div className="title">
 							<span>Inspector</span>
@@ -264,7 +371,34 @@ class MainView extends React.Component<{}, MainViewState> {
 		)
 	}
 
+	async loadCave() {
+		let { scene, camera, renderer } = unwrap(this.three)
+		for (let obj of this.caveObjects) {
+			scene.remove(obj)
+		}
+
+		this.cave = await Cave.init()
+		let chunk = await this.cave.getChunk(0, 0, 0)
+		let material = new Three.MeshPhongMaterial({ color: 0x00ff00 })
+		chunk.geom.computeVertexNormals()
+		let mesh = new Three.Mesh(chunk.geom, material)
+		this.caveObjects.push(mesh)
+		scene.add(mesh)
+	}
+
 	async componentDidMount() {
+		this.setState({
+			currentDatabase: await window.electronAPI
+				.currentDatabase()
+				.then((path) => {
+					if (path) {
+						return { path }
+					} else {
+						return null
+					}
+				}),
+		})
+
 		this.canvas = unwrap(this.canvasRef.current)
 		let scene = new Three.Scene()
 		let camera = new Three.PerspectiveCamera(
@@ -277,8 +411,10 @@ class MainView extends React.Component<{}, MainViewState> {
 		renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight)
 		this.three = { scene, camera, renderer }
 
+		this.loadCave()
+
 		// Cyan background
-		scene.background = new Three.Color(0x00ffff)
+		scene.background = new Three.Color(0x000080)
 		scene.add(new Three.AmbientLight(0x404040))
 
 		this.light = new Three.PointLight(0xffffff, 300)
@@ -288,19 +424,19 @@ class MainView extends React.Component<{}, MainViewState> {
 		this.physicsScene = new PhysicsScene(this.three)
 		await this.physicsScene.init()
 
-		this.cave = new Cave()
-		let chunk = this.cave.getChunk(0, 0, 0)
-		let material = new Three.MeshPhongMaterial({ color: 0x00ff00 })
-		let mesh = new Three.Mesh(chunk.geom, material)
-
-		scene.add(mesh)
+		camera.position.set(24, 24, 48)
 
 		this.keydownEvent = (e) => {
+			if (
+				document.activeElement === this.clickthroughRef.current ||
+				document.activeElement === this.canvas
+			) {
+				e.preventDefault()
+			}
+
 			if (e.code === 'Tab') {
 				this.setState({ uiShown: !this.state.uiShown })
 			}
-			let now = performance.now()
-
 			this.keysPressed.add(e.code)
 			if (this.artificialKeyups[e.code]) {
 				clearTimeout(this.artificialKeyups[e.code])
@@ -326,7 +462,10 @@ class MainView extends React.Component<{}, MainViewState> {
 		document.addEventListener('keyup', this.keyupEvent)
 
 		this.mouseDownEvent = (e) => {
-			if (e.target !== this.clickthroughRef.current) {
+			if (
+				e.target !== this.clickthroughRef.current &&
+				e.target !== this.canvas
+			) {
 				return
 			}
 			e.preventDefault()
@@ -373,7 +512,7 @@ class MainView extends React.Component<{}, MainViewState> {
 		this.scrollEvent = (e) => {
 			if (this.three) {
 				let facing = this.three.camera.getWorldDirection(new Three.Vector3())
-				this.three.camera.position.addScaledVector(facing, e.deltaY * 0.01)
+				this.three.camera.position.addScaledVector(facing, e.deltaY * -0.01)
 			}
 		}
 		document.addEventListener('wheel', this.scrollEvent)
@@ -385,6 +524,11 @@ class MainView extends React.Component<{}, MainViewState> {
 			renderer.setSize(clientWidth, clientHeight)
 		}
 		window.addEventListener('resize', this.windowResizeEvent)
+
+		this.updateDatabaseSizeInterval = setInterval(
+			async () => await this.updateDatabaseSize(),
+			1000,
+		)
 
 		this.renderFrame()
 	}
@@ -417,6 +561,10 @@ class MainView extends React.Component<{}, MainViewState> {
 		if (this.windowResizeEvent) {
 			window.removeEventListener('resize', this.windowResizeEvent)
 		}
+
+		if (this.updateDatabaseSizeInterval) {
+			clearInterval(this.updateDatabaseSizeInterval)
+		}
 	}
 
 	renderFrame() {
@@ -438,12 +586,18 @@ class MainView extends React.Component<{}, MainViewState> {
 		})
 
 		requestAnimationFrame(() => this.renderFrame())
-		if (!this.three || !this.physicsScene) {
+		if (!this.three || !this.physicsScene || this.isLoading) {
 			return
 		}
 		this.physicsScene.update()
 
 		let dist = 0.01 * deltaMs
+		if (
+			this.keysPressed.has('ControlLeft') ||
+			this.keysPressed.has('ControlRight')
+		) {
+			dist *= 3
+		}
 		if (['KeyW', 'KeyA', 'KeyS', 'KeyD'].some((k) => this.keysPressed.has(k))) {
 			let facing = this.three.camera.getWorldDirection(new Three.Vector3())
 			facing.y = 0
@@ -487,6 +641,13 @@ class MainView extends React.Component<{}, MainViewState> {
 		this.light?.position.copy(cameraPos)
 
 		this.three.renderer.render(this.three.scene, this.three.camera)
+	}
+
+	async updateDatabaseSize() {
+		let size = await window.electronAPI.getDatabaseSize()
+		this.setState({
+			databaseSize: size,
+		})
 	}
 }
 

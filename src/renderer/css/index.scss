@@ -70,6 +70,10 @@ $unit: 32px;
 	display: flex;
 	gap: 8px;
 	padding: 8px;
+
+	& > * {
+		flex-shrink: 0;
+	}
 }
 
 .fill {
@@ -199,9 +203,30 @@ $unit: 32px;
 	max-width: 300px;
 }
 
+.multiline {
+	display: flex;
+	flex-direction: column;
+	font-size: 12px;
+
+	& > p {
+		margin: 0;
+	}
+
+	.small-inline {
+		font-size: 10px;
+		line-height: 1.5;
+	}
+}
+
 .small {
 	font-size: 12px;
 	line-height: 1.5;
 	color: $gray5;
 	margin: 4px 0;
+}
+
+.fps-counter {
+	width: 130px;
+	font-family: 'Roboto Mono', monospace;
+	font-size: 12px;
 }

@@ -26,5 +26,5 @@
 			"@renderer/*": ["src/renderer/js/*"]
 		}
 	},
-	"include": ["src", "test/cavegen.test.ts"]
+	"include": ["src", "test"]
 }
