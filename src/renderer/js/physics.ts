@@ -16,8 +16,8 @@ export class PhysicsScene {
 
 	private dynamicsWorld: Ammo.btDiscreteDynamicsWorld
 
-	//private map = new Map<Three.Object3D, Ammo.btRigidBody>()
-	private threeObjects = new Set<Three.Object3D>()
+	//private threeObjects = new Set<Three.Object3D>()
+	threeGroup
 
 	constructor(
 		private three: {
@@ -25,7 +25,10 @@ export class PhysicsScene {
 			camera: Three.Camera
 			renderer: Three.Renderer
 		},
-	) {}
+	) {
+		this.threeGroup = new Three.Group()
+		this.three.scene.add(this.threeGroup)
+	}
 
 	async init() {
 		this.ammo = await new Ammo()
@@ -77,11 +80,9 @@ export class PhysicsScene {
 		assert(this.initialized, 'PhysicsScene not initialized')
 		this.dynamicsWorld.stepSimulation(1 / 60, 10)
 
-		for (let obj of this.threeObjects) {
+		for (let obj of this.threeGroup.children) {
 			this.updateObject(obj)
 		}
-
-		//this.three.renderer.render(this.three.scene, this.three.camera)
 	}
 
 	createBox(params: {
@@ -122,8 +123,7 @@ export class PhysicsScene {
 		)
 		mesh.userData.physicsBody = body
 		mesh.position.copy(position)
-		this.three.scene.add(mesh)
-		this.threeObjects.add(mesh)
+		this.threeGroup.add(mesh)
 
 		return {
 			body,

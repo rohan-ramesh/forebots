@@ -5,6 +5,9 @@ import ReactDOM from 'react-dom/client'
 import * as B from '@blueprintjs/core'
 import * as Three from 'three'
 
+import * as ThreeAddons from 'three/examples/jsm/Addons.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+
 import { assert, basename, clamp, sizeToString, unwrap } from './util'
 import { PhysicsScene } from './physics'
 import { Cave } from './cavegen'
@@ -54,8 +57,9 @@ class MainView extends React.Component<{}, MainViewState> {
 	canvas: HTMLCanvasElement | null = null
 	three: {
 		scene: Three.Scene
-		camera: Three.Camera
+		camera: Three.PerspectiveCamera
 		renderer: Three.Renderer
+		composer: ThreeAddons.EffectComposer
 	} | null = null
 
 	light: Three.PointLight | null = null
@@ -88,6 +92,14 @@ class MainView extends React.Component<{}, MainViewState> {
 
 	isLoading: boolean = false
 	caveObjects: Three.Object3D[] = []
+
+	glowScene: Three.Scene | null = null
+	mainCanvas: HTMLCanvasElement | null = null
+	mainRenderer: Three.Renderer | null = null
+	glowCanvas: HTMLCanvasElement | null = null
+	glowRenderer: Three.Renderer | null = null
+	glowEffectActive: boolean = false
+	glowMat: Three.ShaderMaterial | null = null
 
 	constructor(props: {}) {
 		super(props)
@@ -409,7 +421,20 @@ class MainView extends React.Component<{}, MainViewState> {
 		)
 		let renderer = new Three.WebGLRenderer({ canvas: this.canvas })
 		renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight)
-		this.three = { scene, camera, renderer }
+
+		let composer = new ThreeAddons.EffectComposer(
+			renderer,
+			new Three.WebGLRenderTarget(
+				this.canvas.clientWidth,
+				this.canvas.clientHeight,
+				{
+					stencilBuffer: true,
+				},
+			),
+		)
+		composer.addPass(new RenderPass(scene, camera))
+
+		this.three = { scene, camera, renderer, composer }
 
 		this.loadCave()
 
@@ -424,7 +449,10 @@ class MainView extends React.Component<{}, MainViewState> {
 		this.physicsScene = new PhysicsScene(this.three)
 		await this.physicsScene.init()
 
-		camera.position.set(24, 24, 48)
+		//camera.position.set(24, 24, 48)
+		camera.position.set(0, -10, 10)
+		camera.rotation.order = 'YXZ'
+		camera.rotation.x = -Math.PI / 4
 
 		this.keydownEvent = (e) => {
 			if (
@@ -482,6 +510,8 @@ class MainView extends React.Component<{}, MainViewState> {
 		}
 		document.addEventListener('mouseup', this.mouseUpEvent)
 
+		this.initializeGlow()
+
 		this.mouseMoveEvent = (e) => {
 			if (this.cameraRotStart) {
 				let { x, y } = this.cameraRotStart
@@ -495,8 +525,39 @@ class MainView extends React.Component<{}, MainViewState> {
 				}
 				this.cameraRotStart = { x: e.clientX, y: e.clientY }
 			}
+
+			if (!this.three || !this.canvas || !this.physicsScene) {
+				return
+			}
+			let mousePos = new Three.Vector2(
+				(2 * e.clientX) / this.canvas.clientWidth - 1,
+				(-2 * e.clientY) / this.canvas.clientHeight + 1,
+			)
+			let raycaster = new Three.Raycaster()
+			raycaster.setFromCamera(mousePos, this.three.camera)
+			let intersects = raycaster.intersectObjects(
+				this.physicsScene.threeGroup.children,
+			)
+			if (intersects.length > 0) {
+				let obj = intersects[0].object
+
+				// Copy object onto temp scene so we can render it as a glow effect
+				let tempObj = obj.clone()
+				// @ts-ignore: For some reason the DT types lack this property
+				tempObj.material = new Three.MeshBasicMaterial({
+					color: 0xffffff,
+				})
+				assert(this.glowScene)
+				this.glowScene.children = []
+				this.glowScene.add(tempObj)
+				this.glowEffectActive = true
+			} else {
+				this.glowEffectActive = false
+			}
 		}
 		document.addEventListener('mousemove', this.mouseMoveEvent)
+		document.addEventListener('mouseenter', this.mouseMoveEvent)
+		document.addEventListener('mouseleave', this.mouseMoveEvent)
 
 		this.focusEvent = (e) => {
 			// pass
@@ -522,6 +583,10 @@ class MainView extends React.Component<{}, MainViewState> {
 			camera.aspect = clientWidth / clientHeight
 			camera.updateProjectionMatrix()
 			renderer.setSize(clientWidth, clientHeight)
+			composer.setSize(clientWidth, clientHeight)
+			this.mainRenderer?.setSize(clientWidth, clientHeight)
+			this.glowRenderer?.setSize(clientWidth, clientHeight)
+			this.glowMat?.uniforms.resolution.value.set(clientWidth, clientHeight)
 		}
 		window.addEventListener('resize', this.windowResizeEvent)
 
@@ -548,6 +613,8 @@ class MainView extends React.Component<{}, MainViewState> {
 		}
 		if (this.mouseMoveEvent) {
 			document.removeEventListener('mousemove', this.mouseMoveEvent)
+			document.removeEventListener('mouseenter', this.mouseMoveEvent)
+			document.removeEventListener('mouseleave', this.mouseMoveEvent)
 		}
 		if (this.focusEvent) {
 			window.removeEventListener('focus', this.focusEvent)
@@ -619,14 +686,6 @@ class MainView extends React.Component<{}, MainViewState> {
 			dir.multiplyScalar(dist)
 			this.three.camera.position.add(dir)
 		}
-		/* if (
-			this.keysPressed.has('ShiftLeft') ||
-			this.keysPressed.has('ShiftRight')
-		) {
-			this.three.camera.position.y -= dist
-		} else if (this.keysPressed.has('Space')) {
-			this.three.camera.position.y += dist
-		} */
 		let dy =
 			Number(this.keysPressed.has('Space')) -
 			Number(
@@ -640,7 +699,9 @@ class MainView extends React.Component<{}, MainViewState> {
 		cameraPos.addScaledVector(cameraUp, 2)
 		this.light?.position.copy(cameraPos)
 
-		this.three.renderer.render(this.three.scene, this.three.camera)
+		//this.three.renderer.render(this.three.scene, this.three.camera)
+		//this.three.composer.render()
+		this.compositeScene()
 	}
 
 	async updateDatabaseSize() {
@@ -648,6 +709,98 @@ class MainView extends React.Component<{}, MainViewState> {
 		this.setState({
 			databaseSize: size,
 		})
+	}
+
+	initializeGlow() {
+		assert(this.canvas)
+
+		this.glowScene = new Three.Scene()
+		this.glowScene.background = new Three.Color(0x000000)
+
+		this.mainCanvas = document.createElement('canvas')
+		this.mainRenderer = new Three.WebGLRenderer({
+			alpha: true,
+			canvas: this.mainCanvas,
+		})
+		this.mainRenderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight)
+
+		this.glowCanvas = document.createElement('canvas')
+		this.glowRenderer = new Three.WebGLRenderer({
+			alpha: true,
+			canvas: this.glowCanvas,
+		})
+		this.glowRenderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight)
+
+		this.glowEffectActive = false
+		this.glowMat = new Three.ShaderMaterial({
+			uniforms: {
+				glowColor: { value: new Three.Color(0x00ffff) },
+				baseTex: { value: null },
+				maskTex: { value: null },
+				resolution: {
+					value: new Three.Vector2(
+						this.canvas.clientWidth,
+						this.canvas.clientHeight,
+					),
+				},
+			},
+			fragmentShader: `
+				uniform vec3 glowColor;
+				uniform sampler2D baseTex;
+				uniform sampler2D maskTex;
+				uniform vec2 resolution;
+
+				void main() {
+					float glow = 0.0;
+					if (texture2D(maskTex, gl_FragCoord.xy / resolution.xy).x == 0.0) {
+						for (int x = -3; x <= 3; x++) {
+							for (int y = -3; y <= 3; y++) {
+								vec2 offset = vec2(float(x), float(y)) / resolution;
+								glow += texture2D(
+									maskTex, gl_FragCoord.xy / resolution + offset
+								).x;
+							}
+						}
+					}
+					gl_FragColor = vec4(
+						texture2D(baseTex, gl_FragCoord.xy / resolution.xy).xyz +
+							vec3(glow), 1.0
+					);
+				}
+			`,
+		})
+
+		unwrap(this.three).composer.passes = [
+			new ThreeAddons.ShaderPass(this.glowMat),
+			new ThreeAddons.OutputPass(),
+		]
+	}
+
+	compositeScene() {
+		let { scene, camera, composer } = unwrap(this.three)
+		assert(
+			this.glowScene &&
+				this.glowRenderer &&
+				this.glowMat &&
+				this.glowCanvas &&
+				this.mainRenderer &&
+				this.mainCanvas,
+		)
+
+		if (this.glowEffectActive) {
+			this.glowRenderer.render(this.glowScene, camera)
+			this.glowMat.uniforms.maskTex.value = new Three.Texture(this.glowCanvas)
+			this.glowMat.uniforms.maskTex.value.needsUpdate = true
+		} else {
+			this.glowMat.uniforms.maskTex.value = null
+		}
+
+		this.mainRenderer.render(scene, camera)
+		this.glowMat.uniforms.baseTex.value = new Three.Texture(this.mainCanvas)
+		this.glowMat.uniforms.baseTex.value.needsUpdate = true
+
+		// Composite the result onto the main scene
+		composer.render()
 	}
 }
 
