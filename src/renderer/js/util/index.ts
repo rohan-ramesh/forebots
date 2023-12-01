@@ -33,3 +33,20 @@ export function sizeToString(size: number): string {
 	}
 	return size.toFixed(2) + ' ' + units[unit]
 }
+
+export function* iterateInChunks<T>(
+	iterable: Iterable<T>,
+	chunkSize: number,
+): Generator<T[]> {
+	let chunk: T[] = []
+	for (let item of iterable) {
+		chunk.push(item)
+		if (chunk.length == chunkSize) {
+			yield chunk
+			chunk = []
+		}
+	}
+	if (chunk.length > 0) {
+		yield chunk
+	}
+}
