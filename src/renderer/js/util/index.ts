@@ -50,3 +50,43 @@ export function* iterateInChunks<T>(
 		yield chunk
 	}
 }
+
+export abstract class EventEmitter<T> {
+	private listeners: {
+		[evtType in keyof T]?: {
+			cb: (param: T[evtType]) => void
+			once: boolean
+		}[]
+	} = {}
+
+	on<K extends keyof T>(event: K, cb: (param: T[K]) => void) {
+		this.listeners[event] ??= []
+		this.listeners[event]!.push({ cb, once: false })
+	}
+
+	once<K extends keyof T>(event: K, cb: (param: T[K]) => void) {
+		this.listeners[event] ??= []
+		this.listeners[event]!.push({ cb, once: true })
+	}
+
+	off<K extends keyof T>(event: K, cb: (param: T[K]) => void) {
+		if (this.listeners[event] === undefined) {
+			return
+		}
+		let idx = this.listeners[event]!.findIndex((l) => l.cb === cb)
+		if (idx === -1) {
+			return
+		}
+		this.listeners[event]!.splice(idx, 1)
+	}
+
+	emit<K extends keyof T>(event: K, param: T[K]) {
+		if (this.listeners[event] === undefined) {
+			return
+		}
+		this.listeners[event] = this.listeners[event]!.filter((l) => {
+			l.cb(param)
+			return !l.once
+		})
+	}
+}
