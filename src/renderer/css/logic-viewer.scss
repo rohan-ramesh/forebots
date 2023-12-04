@@ -1,3 +1,115 @@
+@use 'sass:color';
+
+@import '@blueprintjs/core/lib/scss/variables.scss';
+
 .dropdown-button {
 	width: 200px;
+}
+
+.logic-viewer {
+	display: flex;
+	flex-direction: column;
+	flex-wrap: wrap;
+	height: 100vh;
+	align-content: flex-start;
+	padding: 10px;
+	gap: 10px;
+	overflow: auto;
+
+	& > .bp5-card {
+		//margin: 10px;
+		width: 500px;
+	}
+}
+
+.four {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	width: 460px;
+	padding: 0;
+
+	& > li {
+		list-style: none;
+		display: grid;
+		grid-template-rows: 24px auto;
+		margin: 10px 0;
+	}
+
+	.bp5-slider {
+		width: 80%;
+		left: 10%;
+	}
+}
+
+.gyro {
+	padding: 0;
+
+	& > li {
+		list-style: none;
+		display: grid;
+		grid-template-columns: 32px auto;
+		margin: 10px 0;
+	}
+}
+
+.radio {
+	display: grid;
+	height: 300px;
+	grid-template:
+		'heading' 33px
+		'history' 1fr
+		'compose' 30px
+		/ 1fr;
+	gap: 2px;
+
+	.heading {
+		grid-area: heading;
+	}
+
+	.history {
+		grid-area: history;
+		overflow: auto;
+		background: $dark-gray1;
+		padding: 0;
+		box-shadow: none;
+		border: 1px solid $gray1;
+	}
+
+	.message {
+		display: grid;
+		grid-template-columns: 16px 1fr;
+		gap: 16px;
+		padding: 16px;
+
+		&.user {
+			background: color.adjust($orange1, $alpha: -0.7);
+			color: $orange5;
+			border-bottom: 1px solid color.adjust($orange5, $alpha: -0.5);
+		}
+
+		&.robot {
+			background: color.adjust($violet1, $alpha: -0.7);
+			color: $violet5;
+			border-bottom: 1px solid color.adjust($violet5, $alpha: -0.5);
+		}
+
+		&:last-child {
+			border-bottom: none;
+		}
+	}
+
+	.compose {
+		grid-area: compose;
+		width: 100%;
+
+		& > .bp5-input-group {
+			width: 100%;
+			flex-shrink: 1;
+		}
+	}
+}
+
+.alarm-state {
+	display: grid;
+	grid-template-columns: 1fr 30px;
 }

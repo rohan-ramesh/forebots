@@ -5,12 +5,12 @@ import { EventEmitter } from '../util'
  */
 export interface ILogic {}
 
-export interface SerialDevice<Send, Receive>
+export interface SerialDevice<ToPeripheral, ToForebot>
 	extends EventEmitter<{
-		data: Receive
+		data: ToForebot
 		/* connect: void
 		disconnect: void */
 	}> {
-	send(data: Send): void
+	send(data: ToPeripheral): void
 	connected(): boolean
 }

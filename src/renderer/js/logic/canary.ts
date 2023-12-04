@@ -78,27 +78,33 @@ export class CanaryLogic implements ILogic {
 			}
 			lastGyroscopeTimestamp = now
 
-			let { x, y, z } = data
-
 			// Calculate an "upright plane" based on the gyroscope readings. Then,
 			// calculate the distance between the upright and ground plane at each
 			// point on the ground plane. Finally, adjust the joints so that the
 			// distance between the two planes is minimized.
 
-			let plane = new Three.Plane(new Three.Vector3(x, y, z).normalize(), 0)
+			let { x: rx, y: ry, z: rz } = data
+			rx *= Math.PI / 180
+			ry *= Math.PI / 180
+			rz *= Math.PI / 180
+			let normalVec = new Three.Vector3(0, 1, 0).applyEuler(
+				new Three.Euler(rx, ry, rz, 'XYZ'),
+			)
+			let plane = new Three.Plane(normalVec, 0)
 
 			// prettier-ignore
 			const POINTS = {
-				frontLeft: new Three.Vector3(-0.28, 0, 0.20),
-				frontRight: new Three.Vector3(0.28, 0, 0.20),
-				backLeft: new Three.Vector3(-0.40, 0, -0.30),
-				backRight: new Three.Vector3(0.40, 0, -0.30),
+				frontLeft: new Three.Vector3(-0.28, 0.70, 0.20),
+				frontRight: new Three.Vector3(0.28, 0.70, 0.20),
+				backLeft: new Three.Vector3(-0.40, 0.70, -0.30),
+				backRight: new Three.Vector3(0.40, 0.70, -0.30),
 			} as const
 
 			let state = 'ok' as NavigationState
 			let distances = Object.fromEntries(
 				Object.entries(POINTS).map(([name, point]) => {
 					let distance = plane.distanceToPoint(point)
+					console.log(name, distance)
 					let clampedDistance = clamp(distance, Math.sqrt(0.4 ** 2 * 2), 0.8)
 					if (distance !== clampedDistance) {
 						state = 'maybe-stuck'
@@ -110,6 +116,7 @@ export class CanaryLogic implements ILogic {
 			if (!Object.values(groundSensorStats).every((x) => x.lastReading)) {
 				state = 'maybe-stuck'
 			}
+			console.log(state)
 
 			// It's not a real robot unless it complains like a Roomba that's stuck
 			navigationStateBuffer[navigationStateIndex] = state
@@ -132,11 +139,11 @@ export class CanaryLogic implements ILogic {
 				let hip = this.ifaces.jointServos.hip[name as keyof MotorGroup]
 				let knee = this.ifaces.jointServos.knee[name as keyof MotorGroup]
 
-				let hipAngle = Math.atan2(distance, 0.2)
-				let kneeAngle = Math.atan2(0.2, distance)
+				let hipAngle = Math.acos(distance / 0.8)
+				let kneeAngle = 2 * hipAngle
 
-				hip.send(hipAngle)
-				knee.send(kneeAngle)
+				hip.send(hipAngle * 180 / Math.PI)
+				knee.send(kneeAngle * 180 / Math.PI)
 			}
 		})
 	}
@@ -159,7 +166,7 @@ export class CanaryLogic implements ILogic {
 		let sensorKind: keyof typeof DANGEROUS_RANGES | 'empty' | null = null
 
 		// Circular buffer of the last 5 readings
-		let lastReadings = [...Array(5)].map(() => 0)
+		let lastReadings: (number | null)[] = [...Array(5)].map(() => null)
 		let lastReadingIndex = 0
 
 		let that = this
@@ -167,7 +174,7 @@ export class CanaryLogic implements ILogic {
 		function requestSensor(message: string, timeoutMs: number = 5000) {
 			return new Promise<string>((resolve, reject) => {
 				let timeout = setTimeout(() => {
-					reject('Timeout')
+					reject(new Error('Timeout'))
 				}, timeoutMs)
 				sensor.once('data', (data) => {
 					clearTimeout(timeout)
@@ -183,76 +190,75 @@ export class CanaryLogic implements ILogic {
 		let pollTimeout = null
 		poll()
 
-		// Best way to do guard clauses in a function with cleanup code
-		class ExpectedError extends Error {}
-		const next = () => {
-			throw new ExpectedError()
-		}
-
 		async function poll() {
 			// Unlike setInterval, we are responsible for calling setTimeout again
 			// at the end of the function. As such, use a try-finally block to ensure
 			// that the loop continues even if an error is thrown.
 			try {
-				if (sensor.connected()) {
-					cyclesNotConnected = 0
-					if (alarm !== null) {
-						alarm.clearAlarm()
-						alarm = null
-					}
-				} else {
-					cyclesNotConnected++
-					if (cyclesNotConnected >= 5 && !alarm) {
-						alarm = that.raiseAlarm('warning')
-					}
-					next()
-				}
-
-				if (!sensorKind) {
-					let kind = await requestSensor('kind')
-					if (!DANGEROUS_RANGES.hasOwnProperty(kind)) {
-						console.warn('Unknown sensor kind:', kind)
-						that.raiseAlarm('warning')
-					}
-					next()
-				}
-
-				if (sensorKind === 'empty') {
-					next()
-				}
-
-				let reading = await requestSensor('read')
-				let readingNum = parseFloat(reading)
-				if (isNaN(readingNum)) {
-					console.warn('Invalid sensor reading:', reading)
-					that.raiseAlarm('warning')
-					next()
-				}
-
-				lastReadings[lastReadingIndex] = readingNum
-				lastReadingIndex = (lastReadingIndex + 1) % lastReadings.length
-				if (lastReadings.filter((x) => isDangerous(x)).length > 3) {
-					that.raiseAlarm('emergency', 500_000)
-					that.radioSend({
-						kind: 'emergency',
-						message: `Potentially dangerous levels of ${sensorKind} detected`,
-					})
-					next()
-				}
-
-				function isDangerous(reading: number) {
-					assert(sensorKind !== 'empty' && sensorKind !== null)
-					let range = DANGEROUS_RANGES[sensorKind] as {
-						min?: number
-						max?: number
-					}
-					return (
-						(range.min !== undefined && reading < range.min) ||
-						(range.max !== undefined && reading > range.max)
-					)
-				}
+				await pollInner()
 			} finally {
 				pollTimeout = setTimeout(poll, 1000)
+			}
+		}
+
+		async function pollInner() {
+			if (sensor.connected()) {
+				cyclesNotConnected = 0
+				if (alarm !== null) {
+					alarm.clearAlarm()
+					alarm = null
+				}
+			} else {
+				cyclesNotConnected++
+				if (cyclesNotConnected >= 5 && !alarm) {
+					alarm = that.raiseAlarm('warning')
+				}
+				return
+			}
+
+			if (!sensorKind) {
+				let kind = await requestSensor('kind')
+				if (!DANGEROUS_RANGES.hasOwnProperty(kind) && kind !== 'empty') {
+					console.warn('Unknown sensor kind:', kind)
+					that.raiseAlarm('warning')
+				}
+				sensorKind = kind as keyof typeof DANGEROUS_RANGES | 'empty'
+				return
+			}
+
+			if (sensorKind === 'empty') {
+				return
+			}
+
+			let reading = await requestSensor('read')
+			let readingNum = parseFloat(reading)
+			if (isNaN(readingNum)) {
+				console.warn('Invalid sensor reading:', reading)
+				that.raiseAlarm('warning')
+				return
+			}
+
+			lastReadings[lastReadingIndex] = readingNum
+			lastReadingIndex = (lastReadingIndex + 1) % lastReadings.length
+			if (lastReadings.filter((x) => x !== null && isDangerous(x)).length > 3) {
+				that.raiseAlarm('emergency', 500_000)
+				that.radioSend({
+					kind: 'emergency',
+					message: `Potentially dangerous levels of ${sensorKind} detected`,
+				})
+				return
+			}
+
+			function isDangerous(reading: number) {
+				assert(sensorKind !== 'empty' && sensorKind !== null)
+				let range = DANGEROUS_RANGES[sensorKind] as {
+					min?: number
+					max?: number
+				}
+				return (
+					(range.min !== undefined && reading < range.min) ||
+					(range.max !== undefined && reading > range.max)
+				)
 			}
 		}
 	}
@@ -267,6 +273,8 @@ export class CanaryLogic implements ILogic {
 	 * @returns A function that can be called to end the alarm early.
 	 */
 	raiseAlarm(kind: 'warning' | 'emergency', durationMs?: number) {
+		console.warn('Alarm raised:', kind)
+
 		this.alarmCounts[kind]++
 		if (kind === 'emergency' && this.alarmCounts.emergency === 1) {
 			this.ifaces.bell.send({ kind })
