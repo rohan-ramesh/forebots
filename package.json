@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "",
   "main": "./out/main/index.js",
+  "license": "MPL-2.0",
   "scripts": {
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
