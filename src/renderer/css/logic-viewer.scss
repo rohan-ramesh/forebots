@@ -32,7 +32,11 @@
 		list-style: none;
 		display: grid;
 		grid-template-rows: 24px auto;
-		margin: 10px 0;
+		margin: 0 0 10px 0;
+	}
+
+	&.compact > li {
+		margin: 0 0 5px 0;
 	}
 
 	.bp5-slider {
@@ -42,13 +46,32 @@
 }
 
 .gyro {
-	padding: 0;
+	display: grid;
+	grid-template:
+		'heading heading' 25px
+		'params visual' 1fr
+		/ 1fr 150px;
+	gap: 10px;
 
-	& > li {
-		list-style: none;
-		display: grid;
-		grid-template-columns: 32px auto;
-		margin: 10px 0;
+	.heading {
+		grid-area: heading;
+	}
+
+	.params {
+		grid-area: params;
+		padding: 0;
+		padding-right: 10px;
+	
+		& > li {
+			list-style: none;
+			display: grid;
+			grid-template-columns: 32px auto;
+			margin: 10px 0;
+		}
+	}
+
+	.visual {
+		grid-area: visual;
 	}
 }
 

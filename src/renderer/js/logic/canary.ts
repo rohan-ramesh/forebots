@@ -33,7 +33,7 @@ export class CanaryLogic implements ILogic {
 				hip: MotorGroup
 				knee: MotorGroup
 			}
-			gyroscope: SerialDevice<never, { x: number; y: number; z: number }>
+			gyroscope: SerialDevice<never, { theta: number, phi: number }>
 			radio: SerialDevice<string, string>
 			bell: SerialDevice<{ kind: 'warning' | 'emergency' | 'none' }, never>
 		},
@@ -83,12 +83,11 @@ export class CanaryLogic implements ILogic {
 			// point on the ground plane. Finally, adjust the joints so that the
 			// distance between the two planes is minimized.
 
-			let { x: rx, y: ry, z: rz } = data
-			rx *= Math.PI / 180
-			ry *= Math.PI / 180
-			rz *= Math.PI / 180
+			let { theta, phi } = data
+			theta *= Math.PI / 180
+			phi *= Math.PI / 180
 			let normalVec = new Three.Vector3(0, 1, 0).applyEuler(
-				new Three.Euler(rx, ry, rz, 'XYZ'),
+				new Three.Euler(theta, 0, phi, 'XYZ'),
 			)
 			let plane = new Three.Plane(normalVec, 0)
 

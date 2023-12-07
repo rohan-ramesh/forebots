@@ -4,10 +4,12 @@ import '../css/logic-viewer.scss'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import * as B from '@blueprintjs/core'
+import * as Three from 'three'
+import { GLTFLoader } from 'three/examples/jsm/Addons.js'
 
 import { CanaryLogic } from './logic/canary'
 import { SerialDevice } from './logic'
-import { EventEmitter, assert } from './util'
+import { EventEmitter, assert, clamp, cubicEaseInOut, unwrap } from './util'
 import { emergencyBeep, warningBeep } from './sound'
 
 const CORNERS = ['frontLeft', 'frontRight', 'backLeft', 'backRight'] as const
@@ -43,7 +45,10 @@ type LogicViewerState = {
 		hip: EachCorner<number>
 		knee: EachCorner<number>
 	}
-	gyroscope: { x: number; y: number; z: number }
+	gyroscope: {
+		current: { theta: number; phi: number }
+		target: { theta: number; phi: number }
+	}
 	radio: {
 		message: string
 		party: 'user' | 'robot'
@@ -135,13 +140,13 @@ class Motor
 
 class Gyroscope
 	extends EventEmitter<{
-		data: { x: number; y: number; z: number }
+		data: { theta: number; phi: number }
 	}>
-	implements SerialDevice<never, { x: number; y: number; z: number }>
+	implements SerialDevice<never, { theta: number; phi: number }>
 {
 	constructor(
 		private options: {
-			get: () => { x: number; y: number; z: number }
+			get: () => { theta: number; phi: number }
 		},
 	) {
 		super()
@@ -253,6 +258,42 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 		| ReturnType<typeof emergencyBeep>
 		| null = null
 
+	gyroCanvas: HTMLCanvasElement | null = null
+	gyroCanvasRef: React.RefObject<HTMLCanvasElement> = React.createRef()
+	gyroThree: {
+		scene: Three.Scene
+		camera: Three.Camera
+		renderer: Three.Renderer
+	} | null = null
+	gyroObjects: {
+		currentArrow: Three.Group
+		targetArrow: Three.Group
+		pointLight: Three.PointLight
+	} | null = null
+	gyroVelocity: THREE.Quaternion = new Three.Quaternion()
+
+	botPreview: HTMLCanvasElement | null = null
+	botPreviewRef: React.RefObject<HTMLCanvasElement> = React.createRef()
+	botPreviewThree: {
+		scene: Three.Scene
+		camera: Three.Camera
+		renderer: Three.Renderer
+	} | null = null
+	botPreviewObjects: {
+		hierarchy: Three.Group
+		pointLight: Three.PointLight
+	} | null = null
+
+	botPreviewLastUpdate: number = 0
+	botPreviewLastPanned: number = 0
+	botPreviewMouseStart: { x: number; y: number } | null = null
+	botPreviewZoomDistance: number = 0
+
+	rendering: boolean = false
+
+	radioRef: React.RefObject<HTMLDivElement> = React.createRef()
+	radioScroll: boolean = false
+
 	constructor(props: {}) {
 		super(props)
 
@@ -278,13 +319,18 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 				hip: generateCorners(),
 				knee: generateCorners(),
 			},
-			gyroscope: { x: 0, y: 0, z: 0 },
+			gyroscope: {
+				current: { theta: 0, phi: 0 },
+				target: { theta: 0, phi: 0 },
+			},
 			radio: [],
 			radioDraft: '',
 		}
 	}
 
 	componentDidMount() {
+		this.rendering = true
+
 		let environmentSensors = []
 		for (let i = 0; i < 6; i++) {
 			environmentSensors.push(
@@ -332,9 +378,13 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 		let hipServos = generateCorners((state) => state.jointServos.hip)
 		let kneeServos = generateCorners((state) => state.jointServos.knee)
 
+		this.initBotPreview()
+
 		let gyroscope = new Gyroscope({
-			get: () => this.state.gyroscope,
+			get: () => this.state.gyroscope.current,
 		})
+
+		this.initGyroVisual()
 
 		this.radio = new Radio()
 		this.radio.on('receive', (message) => {
@@ -348,6 +398,7 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 				})
 				return state
 			})
+			this.radioScroll = true
 		})
 
 		let bell = new Bell()
@@ -430,6 +481,9 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 								<B.NumericInput
 									min={0}
 									max={100_000_000}
+									minorStepSize={
+										sensor.type === 'temperature' ? 0.01 : undefined
+									}
 									value={sensor.value}
 									onValueChange={(value) => {
 										this.setState((state) => {
@@ -451,7 +505,7 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 		let groundSensors = (
 			<B.Card>
 				<B.H3>Ground Sensors</B.H3>
-				<ul>
+				<ul className="four compact">
 					{this.state.groundSensors.map((sensor, i) => (
 						<li key={i}>
 							<B.Switch
@@ -472,13 +526,20 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 			</B.Card>
 		)
 
+		const NAMES = {
+			frontLeft: 'Front Left',
+			frontRight: 'Front Right',
+			backLeft: 'Back Left',
+			backRight: 'Back Right',
+		} as const
+
 		let wheelMotors = (
 			<B.Card>
 				<B.H3>Wheel Motors</B.H3>
 				<ul className="four">
-					{Object.entries(this.state.wheelMotors).map(([name, motor], i) => (
+					{Object.entries(this.state.wheelMotors).map(([ident, motor], i) => (
 						<li key={i}>
-							Wheel {name}:{' '}
+							Wheel {NAMES[ident as keyof typeof NAMES]}:{' '}
 							<B.Slider
 								min={-100}
 								max={100}
@@ -497,9 +558,9 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 				<B.H3>Hip Servos</B.H3>
 				<ul className="four">
 					{Object.entries(this.state.jointServos.hip).map(
-						([name, motor], i) => (
+						([ident, motor], i) => (
 							<li key={i}>
-								Hip {name}:{' '}
+								Hip {NAMES[ident as keyof typeof NAMES]}:{' '}
 								<B.Slider
 									min={-45}
 									max={45}
@@ -519,9 +580,9 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 				<B.H3>Knee Servos</B.H3>
 				<ul className="four">
 					{Object.entries(this.state.jointServos.knee).map(
-						([name, motor], i) => (
+						([ident, motor], i) => (
 							<li key={i}>
-								Knee {name}:{' '}
+								Knee {NAMES[ident as keyof typeof NAMES]}:{' '}
 								<B.Slider
 									min={0}
 									max={90}
@@ -536,20 +597,27 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 			</B.Card>
 		)
 
+		let botPreview = (
+			<B.Card className="bot-preview">
+				<B.H3 className="heading">Bot Preview</B.H3>
+				<canvas className="visual" ref={this.botPreviewRef} />
+			</B.Card>
+		)
+
 		let gyroscope = (
-			<B.Card>
-				<B.H3>Gyroscope</B.H3>
-				<ul className="gyro">
-					{(['x', 'y', 'z'] as const).map((axis, i) => (
+			<B.Card className="gyro">
+				<B.H3 className="heading">Gyroscope</B.H3>
+				<ul className="params">
+					{(['theta', 'phi'] as const).map((axis, i) => (
 						<li key={i}>
-							{axis.toUpperCase()}:{' '}
+							{axis === 'theta' ? 'θ' : 'φ'}:{' '}
 							<B.Slider
 								min={-45}
 								max={45}
-								value={this.state.gyroscope[axis]}
+								value={this.state.gyroscope.target[axis]}
 								onChange={(value) => {
 									this.setState((state) => {
-										state.gyroscope[axis] = value
+										state.gyroscope.target[axis] = value
 										return state
 									})
 								}}
@@ -558,6 +626,7 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 						</li>
 					))}
 				</ul>
+				<canvas className="visual" ref={this.gyroCanvasRef} />
 			</B.Card>
 		)
 
@@ -574,12 +643,13 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 			})
 			this.radio!.sendToClient(this.state.radioDraft)
 			this.setState({ radioDraft: '' })
+			this.radioScroll = true
 		}
 
 		let radio = (
 			<B.Card className="radio">
 				<B.H3 className="heading">Radio</B.H3>
-				<B.Card className="history">
+				<B.Card className="history" ref={this.radioRef}>
 					{this.state.radio.map((message, i) => (
 						<div className={`message ${message.party}`} key={i}>
 							<B.Icon icon={message.party === 'user' ? 'person' : 'import'} />
@@ -644,15 +714,381 @@ class LogicViewer extends React.Component<{}, LogicViewerState> {
 		return (
 			<div className="logic-viewer">
 				{environmentSensors}
+				{alarmState}
 				{groundSensors}
 				{wheelMotors}
 				{hipServos}
 				{kneeServos}
+				{botPreview}
 				{gyroscope}
 				{radio}
-				{alarmState}
 			</div>
 		)
+	}
+
+	componentDidUpdate() {
+		if (this.radioScroll) {
+			let radioHistory = this.radioRef.current
+			if (radioHistory) {
+				radioHistory.scrollTop = radioHistory.scrollHeight
+			}
+			this.radioScroll = false
+		}
+	}
+
+	async initBotPreview() {
+		this.botPreview = unwrap(this.botPreviewRef.current)
+		this.botPreview.width = 450
+		this.botPreview.height = 200
+		this.botPreviewZoomDistance = 2
+
+		let scene = new Three.Scene()
+		let camera = new Three.PerspectiveCamera(45, 450 / 200, 0.1, 1000)
+		camera.position.z = this.botPreviewZoomDistance
+		let renderer = new Three.WebGLRenderer({ canvas: this.botPreview })
+		renderer.setSize(450, 200)
+
+		this.botPreviewThree = { scene, camera, renderer }
+
+		let loader = new GLTFLoader()
+		let gltf = await loader.loadAsync('models/canary.glb')
+		let model = gltf.scene
+
+		type HierarchySchema = {
+			part: string
+			tfm?: Three.Vector3
+			children?: HierarchySchema[]
+			color?: number
+		}
+
+		const getLegHierarchy = (
+			corner: 'LF' | 'RF' | 'LB' | 'RB',
+			color?: number,
+		) => {
+			let x = {
+				LF: -0.23,
+				RF: 0.23,
+				LB: -0.35,
+				RB: 0.35,
+			}[corner]
+			let z = corner.endsWith('B') ? 0.3 : -0.2
+
+			// prettier-ignore
+			return {
+				part: `${corner}_Wheel_Leg_Upper`,
+				tfm: new Three.Vector3(x, 0.2, z),
+				children: [{
+					part: `${corner}_Wheel_Leg_Lower`,
+					tfm: new Three.Vector3(x, 0, z),
+					children: [
+						{ part: `${corner}_Wheel_Outer_Cap` },
+						{ part: `${corner}_Wheel_Inner_Cap` },
+						{ part: `${corner}_Wheel_Outer_Tire` },
+						{ part: `${corner}_Wheel_Inner_Tire` },
+					],
+				}],
+				color,
+			}
+		}
+
+		const SCHEMA: HierarchySchema = {
+			part: 'Body',
+			children: [
+				getLegHierarchy('LF', 0xff0000),
+				getLegHierarchy('RF', 0x0000ff),
+				getLegHierarchy('LB', 0xffff00),
+				getLegHierarchy('RB', 0xff00ff),
+			],
+			color: 0x00ff00,
+		}
+
+		let hierarchy = buildHierarchy(SCHEMA)
+		scene.add(hierarchy)
+
+		let pointLight = new Three.PointLight(0xffffff, 100)
+		pointLight.position.set(0, 5, 0)
+		scene.add(pointLight)
+
+		let ambientLight = new Three.AmbientLight(0x808080)
+		scene.add(ambientLight)
+
+		this.botPreviewObjects = {
+			hierarchy,
+			pointLight,
+		}
+
+		this.botPreview.addEventListener('mousedown', (evt) => {
+			let bounds = unwrap(this.botPreview).getBoundingClientRect()
+			if (evt.button === 0) {
+				this.botPreviewMouseStart = {
+					x: evt.offsetX - bounds.left,
+					y: evt.offsetY - bounds.top,
+				}
+			}
+		})
+
+		document.addEventListener('mouseup', (evt) => {
+			if (evt.button === 0) {
+				this.botPreviewMouseStart = null
+			}
+		})
+
+		this.botPreview.addEventListener('mousemove', (evt) => {
+			let mouseStart = this.botPreviewMouseStart
+			if (!mouseStart) {
+				return
+			}
+
+			let bounds = unwrap(this.botPreview).getBoundingClientRect()
+			let mouseEnd = {
+				x: evt.offsetX - bounds.left,
+				y: evt.offsetY - bounds.top,
+			}
+
+			let rot = camera.rotation
+			rot.order = 'YXZ'
+			let dx = mouseEnd.x - mouseStart.x
+			let dy = mouseEnd.y - mouseStart.y
+			rot.y -= dx * 0.02
+			rot.x = clamp(rot.x - dy * 0.02, -Math.PI / 2, Math.PI / 2)
+
+			this.botPreviewMouseStart = mouseEnd
+		})
+
+		this.botPreview.addEventListener('wheel', (evt) => {
+			let delta = evt.deltaY
+			this.botPreviewZoomDistance = clamp(
+				this.botPreviewZoomDistance - delta * 0.001,
+				1,
+				3,
+			)
+		})
+
+		this.updateBotPreview()
+
+		function buildHierarchy(hier: HierarchySchema, color?: number) {
+			color = hier.color ?? color
+			let part = model.getObjectByName(hier.part)
+			if (!part) {
+				throw new Error(`Could not find part ${hier.part}`)
+			}
+
+			if (color !== undefined) {
+				let material = new Three.MeshPhongMaterial({ color })
+				if (part instanceof Three.Mesh) {
+					part.material = material
+				} else {
+					console.warn(
+						`Part ${hier.part} is not a mesh, so it cannot be colored`,
+					)
+				}
+			}
+
+			let group = new Three.Group()
+			group.add(part)
+			if (hier.children) {
+				for (let child of hier.children) {
+					group.add(buildHierarchy(child, color))
+				}
+			}
+			if (hier.tfm) {
+				group.position.add(hier.tfm)
+				//part.position.sub(hier.tfm)
+				for (let child of group.children) {
+					child.position.sub(hier.tfm)
+				}
+			}
+
+			// DEBUG: Show axes
+			//group.add(new Three.AxesHelper(0.5))
+
+			return group
+		}
+	}
+
+	updateBotPreview() {
+		if (!this.rendering) {
+			return
+		}
+		requestAnimationFrame(() => this.updateBotPreview())
+
+		let now = performance.now()
+		let deltaMs = now - this.botPreviewLastUpdate
+		this.botPreviewLastUpdate = now
+
+		if (this.botPreviewMouseStart) {
+			this.botPreviewLastPanned = now
+		}
+
+		let { scene, camera, renderer } = unwrap(this.botPreviewThree)
+
+		let { hierarchy, pointLight } = unwrap(this.botPreviewObjects)
+
+		let { jointServos } = this.state
+
+		let mapping = {
+			LF: 'frontLeft',
+			RF: 'frontRight',
+			LB: 'backLeft',
+			RB: 'backRight',
+		} as const
+
+		for (let leg of hierarchy.children) {
+			if (!(leg instanceof Three.Group)) {
+				continue
+			}
+
+			let cornerId = leg.children[0].name.slice(0, 2)
+			assert(mapping.hasOwnProperty(cornerId))
+			let corner = mapping[cornerId as keyof typeof mapping]
+
+			let hip = jointServos.hip[corner]
+			leg.rotation.x = -hip * (Math.PI / 180)
+
+			let knee = jointServos.knee[corner]
+			leg.children[1].rotation.x = knee * (Math.PI / 180)
+		}
+
+		let rot = camera.rotation
+
+		let sinceLastPanned = now - this.botPreviewLastPanned
+		if (sinceLastPanned > 500) {
+			let speed = cubicEaseInOut(clamp((sinceLastPanned - 500) / 1000, 0, 1))
+			rot.order = 'YXZ'
+			rot.y += speed * deltaMs * 0.0002
+		}
+
+		let cameraPos = new Three.Vector3(0, 0, this.botPreviewZoomDistance)
+		cameraPos.applyEuler(rot)
+		camera.position.copy(cameraPos)
+
+		let lightPos = new Three.Vector3(0, 5, 0)
+		lightPos.applyEuler(rot)
+		pointLight.position.copy(lightPos)
+
+		renderer.render(scene, camera)
+	}
+
+	initGyroVisual() {
+		this.gyroCanvas = unwrap(this.gyroCanvasRef.current)
+		this.gyroCanvas.width = 150
+		this.gyroCanvas.height = 150
+
+		let scene = new Three.Scene()
+		let camera = new Three.PerspectiveCamera(45, 1, 0.1, 1000)
+		camera.position.z = 3
+		camera.position.y = 0.5
+		let renderer = new Three.WebGLRenderer({ canvas: this.gyroCanvas })
+		renderer.setSize(150, 150)
+
+		this.gyroThree = { scene, camera, renderer }
+
+		let currentArrow = createArrow(0x00ff00)
+		scene.add(currentArrow)
+
+		let targetArrow = createArrow(0xff0000)
+		scene.add(targetArrow)
+
+		let pointLight = new Three.PointLight(0xffffff, 100)
+		pointLight.position.set(0, 10, 0)
+		scene.add(pointLight)
+
+		let ambientLight = new Three.AmbientLight(0x808080)
+		scene.add(ambientLight)
+
+		let neutralPlane = new Three.Group()
+		for (let x = 0; x < 5; x++) {
+			for (let z = 0; z < 5; z++) {
+				let square = new Three.Mesh(
+					new Three.PlaneGeometry(0.2, 0.2),
+					new Three.MeshPhongMaterial({
+						color: (x + z) % 2 === 0 ? 0x808080 : 0x404040,
+						side: Three.DoubleSide,
+					}),
+				)
+				square.rotateX(Math.PI / 2)
+				square.position.x = (x - 2) * 0.2
+				square.position.z = (z - 2) * 0.2
+				neutralPlane.add(square)
+			}
+		}
+		scene.add(neutralPlane)
+
+		this.gyroObjects = {
+			currentArrow,
+			targetArrow,
+			pointLight,
+		}
+
+		this.updateGyro()
+
+		function createArrow(color: number) {
+			let arrow = new Three.Group()
+
+			let lineMat = new Three.LineBasicMaterial({ color })
+			let linePoints = [new Three.Vector3(0, 0, 0), new Three.Vector3(0, 1, 0)]
+			let lineGeom = new Three.BufferGeometry().setFromPoints(linePoints)
+			let line = new Three.Line(lineGeom, lineMat)
+			arrow.add(line)
+
+			let coneGeom = new Three.ConeGeometry(0.125, 0.25, 32)
+			let coneMat = new Three.MeshPhongMaterial({ color })
+			let cone = new Three.Mesh(coneGeom, coneMat)
+			cone.position.y = 1
+			arrow.add(cone)
+
+			return arrow
+		}
+	}
+
+	updateGyro() {
+		if (!this.rendering) {
+			return
+		}
+		requestAnimationFrame(() => this.updateGyro())
+
+		let { scene, camera, renderer } = unwrap(this.gyroThree)
+		let { currentArrow, targetArrow, pointLight } = unwrap(this.gyroObjects)
+
+		let { theta, phi } = this.state.gyroscope.target
+		targetArrow.rotation.x = theta * (Math.PI / 180)
+		targetArrow.rotation.z = phi * (Math.PI / 180)
+
+		let cameraPos = new Three.Vector3(0, 1, 3)
+		cameraPos.applyEuler(targetArrow.rotation)
+		camera.position.copy(cameraPos)
+		camera.rotation.copy(targetArrow.rotation)
+
+		let pointLightPos = new Three.Vector3(0, 10, 0)
+		pointLightPos.applyEuler(targetArrow.rotation)
+		pointLight.position.copy(pointLightPos)
+
+		let cur = currentArrow.rotation
+		let tgt = targetArrow.rotation
+
+		let curQuat = new Three.Quaternion().setFromEuler(cur)
+		let tgtQuat = new Three.Quaternion().setFromEuler(tgt)
+		let dist = 2 * Math.acos(Math.abs(curQuat.dot(tgtQuat)))
+
+		let accelQuat = new Three.Quaternion()
+			.copy(curQuat)
+			.invert()
+			.multiply(tgtQuat)
+		accelQuat.slerp(new Three.Quaternion(), 0.95 + (1 - Math.sin(dist)) / 20)
+
+		this.gyroVelocity.multiply(accelQuat).slerp(new Three.Quaternion(), 0.05)
+		curQuat.multiply(this.gyroVelocity)
+		cur.setFromQuaternion(curQuat)
+
+		this.setState((state) => {
+			state.gyroscope.current = {
+				theta: cur.x * (180 / Math.PI),
+				phi: cur.z * (180 / Math.PI),
+			}
+			return state
+		})
+
+		renderer.render(scene, camera)
 	}
 }
 
